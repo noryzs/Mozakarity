@@ -1,0 +1,82 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Prepare web files
+        run: |
+          mkdir www
+          cp index.html manifest.webmanifest sw.js icon-192.png icon-512.png www/
+      - name: Create Capacitor project
+        run: |
+          npm init -y
+          npm i @capacitor/core@8 @capacitor/android@8 @capacitor/app@8 @capacitor/filesystem@8 @capacitor/share@8 @capacitor/local-notifications@8
+          npm i -D @capacitor/cli@8
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.karrar.mozakarti",
+            "appName": "مذاكرتي",
+            "webDir": "www",
+            "plugins": {
+              "LocalNotifications": { "smallIcon": "ic_stat", "iconColor": "#232D6B" }
+            }
+          }
+          EOF
+          npx cap add android
+      - name: Permissions and notification icon
+        run: |
+          RES=android/app/src/main/res
+          mkdir -p $RES/drawable
+          cat > $RES/drawable/ic_stat.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM16.2,16.2L11,13V7h1.5v5.2l4.5,2.7 -0.8,1.3z"/>
+          </vector>
+          EOF
+          sed -i 's#</manifest>#<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-permission android:name="android.permission.VIBRATE"/><uses-permission android:name="android.permission.USE_EXACT_ALARM"/><uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/></manifest>#' android/app/src/main/AndroidManifest.xml
+      - name: App icon
+        continue-on-error: true
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y imagemagick
+          RES=android/app/src/main/res
+          for s in mdpi:48:108 hdpi:72:162 xhdpi:96:216 xxhdpi:144:324 xxxhdpi:192:432; do
+            IFS=: read d a f <<< "$s"
+            convert icon-512.png -resize ${a}x${a} $RES/mipmap-$d/ic_launcher.png
+            convert icon-512.png -resize ${a}x${a} $RES/mipmap-$d/ic_launcher_round.png
+            convert icon-512.png -resize ${f}x${f} $RES/mipmap-$d/ic_launcher_foreground.png
+          done
+      - name: Stable signing key
+        run: |
+          mkdir -p ~/.android
+          if [ -f debug.keystore ]; then cp debug.keystore ~/.android/debug.keystore; fi
+      - name: Build APK
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cd ..
+          cp android/app/build/outputs/apk/debug/app-debug.apk mozakarti.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mozakarti-apk
+          path: mozakarti.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Mozakarti build ${{ github.run_number }}
+          files: mozakarti.apk
